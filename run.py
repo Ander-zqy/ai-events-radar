@@ -25,6 +25,9 @@ import json
 import datetime
 from dataclasses import asdict
 
+from dotenv import load_dotenv
+load_dotenv()   # 读取同目录下的 .env 文件
+
 import event_scraper as es
 from stability import RunReport, SourceHealth, run_source
 from normalize import normalize

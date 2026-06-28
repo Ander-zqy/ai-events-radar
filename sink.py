@@ -27,10 +27,10 @@ import requests
 # ------------------------------------------------------------
 # 配置(从环境变量读;GitHub Actions 里设成 Secret)
 # ------------------------------------------------------------
-APP_ID     = os.environ.get("FEISHU_APP_ID",     "cli_aaca7cafee381cc6")
-APP_SECRET = os.environ.get("FEISHU_APP_SECRET",  "WckJfxiHrE7QAIyYuzP3zwSmwxDJkeXU")
-APP_TOKEN  = os.environ.get("FEISHU_APP_TOKEN",   "VkjtbJKvWatcYzsBPO7cdmINnSb")
-TABLE_ID   = os.environ.get("FEISHU_TABLE_ID",    "tbl814XFtuyhTbHC")
+APP_ID     = os.environ.get("FEISHU_APP_ID",     "")
+APP_SECRET = os.environ.get("FEISHU_APP_SECRET",  "")
+APP_TOKEN  = os.environ.get("FEISHU_APP_TOKEN",   "")
+TABLE_ID   = os.environ.get("FEISHU_TABLE_ID",    "")
 
 BASE = "https://open.feishu.cn/open-apis"
 BATCH = 500   # 飞书单次批量上限
