@@ -1,0 +1,24 @@
+# 缓存文件(每台机器自己生成)
+.translation_cache.json
+.enrich_cache.json
+.source_health.json
+
+# 产出 CSV/JSON(按日期生成,不提交)
+out/
+events_*.csv
+events_*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 密钥(绝不提交)
+.env
+*.secret
