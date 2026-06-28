@@ -2,17 +2,22 @@ name: scrape-events
 
 on:
   schedule:
-    # GitHub Actions 的 cron 是 UTC!  0 1 * * * = 每天 01:00 UTC = 09:00 北京
+    # 每天 01:00 UTC = 09:00 北京(抓取 + 写飞书审核台)
     - cron: "0 1 * * *"
-  workflow_dispatch: {}        # 支持手动触发(测试用)
+    # 每天 02:00 UTC = 10:00 北京(推送机器人日报)
+    - cron: "0 2 * * *"
+  workflow_dispatch: {}
 
 permissions:
-  contents: read               # 用 artifact 存产出,不写仓库;要改成提交回仓库再开 write
+  contents: read
 
 jobs:
   scrape:
+    name: 抓取并写入审核台
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # 只在 01:00 UTC 或手动触发时跑
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 1 * * *'
     steps:
       - uses: actions/checkout@v4
 
@@ -24,9 +29,6 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
-      # 状态文件(翻译/详情缓存、哨兵基线)在一次性 runner 上会消失。
-      # 这只是优化,丢了不影响正确性;这里尽量留住:用唯一 key 写新缓存,
-      # 用 restore-keys 前缀恢复最近一次(滚动缓存惯用法)。
       - name: 恢复状态缓存
         uses: actions/cache@v4
         with:
@@ -40,11 +42,14 @@ jobs:
 
       - name: 跑管道
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}   # 没设也能跑,只是跳过翻译
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FEISHU_APP_ID:     ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_APP_TOKEN:  ${{ secrets.FEISHU_APP_TOKEN }}
+          FEISHU_TABLE_ID:   ${{ secrets.FEISHU_TABLE_ID }}
           OUTPUT_DIR: out
         run: python run.py
 
-      # 即使哨兵把这次判失败(某源归零),也上传产出便于排查
       - name: 上传产出
         if: always()
         uses: actions/upload-artifact@v4
@@ -52,3 +57,29 @@ jobs:
           name: events-${{ github.run_id }}
           path: out/
           retention-days: 14
+
+  bot:
+    name: 机器人日报推送
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # 只在 02:00 UTC 或手动触发时跑
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * *'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 推送机器人日报
+        env:
+          FEISHU_APP_ID:      ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET:  ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_APP_TOKEN:   ${{ secrets.FEISHU_APP_TOKEN }}
+          FEISHU_TABLE_ID:    ${{ secrets.FEISHU_TABLE_ID }}
+          FEISHU_BOT_WEBHOOK: ${{ secrets.FEISHU_BOT_WEBHOOK }}
+        run: python bot.py
