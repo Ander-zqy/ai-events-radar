@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 AI 活动雷达 - 飞书机器人推送
-============================================================
+
 规则:
   - 平日: 推送所有 approved 活动
-  - 周日: 先推送所有 approved 活动, 再附加一段周报汇总
-  - 周报: 按城市分组, 同一城市内按时间排序
+  - 周日: 先推送所有 approved 活动，再附加一段周报汇总
+  - 周报: 按城市分组，同一城市内按时间排序
 
 周报展示字段:
   - 活动名称
@@ -15,9 +15,8 @@ AI 活动雷达 - 飞书机器人推送
   - 主题关键词
 
 说明:
-  - 这里用飞书记录的 updated_time 作为“本周发布/审核更新”的近似依据
-  - 如果以后你想严格区分“审核时间”和“最后编辑时间”, 可以再补一个 approved_at 字段
-============================================================
+  - 周报按 approved_at 回顾
+  - 如果 approved_at 缺失，bot 会在运行时自动补写当前时间
 """
 
 import os
@@ -39,6 +38,7 @@ BOT_WEBHOOK = os.environ.get("FEISHU_BOT_WEBHOOK", "")
 
 BASE = "https://open.feishu.cn/open-apis"
 TZ = ZoneInfo("Asia/Shanghai")
+BATCH = 500
 
 
 @dataclass
@@ -80,7 +80,7 @@ def _status_text(value) -> str:
 
 def fetch_approved(token: str) -> list[FeishuEvent]:
     headers = {"Authorization": f"Bearer {token}"}
-    events = []
+    events: list[FeishuEvent] = []
     page_token = ""
     sample_rows = []
 
@@ -102,6 +102,7 @@ def fetch_approved(token: str) -> list[FeishuEvent]:
 
         for rec in data["data"].get("items", []):
             fields = rec.get("fields", {}) or {}
+
             if len(sample_rows) < 5:
                 sample_rows.append(
                     {
@@ -110,8 +111,10 @@ def fetch_approved(token: str) -> list[FeishuEvent]:
                         "field_names": sorted(fields.keys()),
                     }
                 )
+
             if _status_text(fields.get("status")) != "approved":
                 continue
+
             events.append(
                 FeishuEvent(
                     fields=fields,
@@ -150,6 +153,121 @@ def parse_updated_date(event: FeishuEvent) -> dt.date | None:
     return updated.astimezone(TZ).date() if updated else None
 
 
+def parse_feishu_datetime(value) -> dt.datetime | None:
+    if value is None or value == "":
+        return None
+
+    if isinstance(value, (int, float)):
+        try:
+            return dt.datetime.fromtimestamp(float(value) / 1000, tz=TZ)
+        except Exception:
+            return None
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+
+        if text.isdigit():
+            try:
+                return dt.datetime.fromtimestamp(int(text) / 1000, tz=TZ)
+            except Exception:
+                return None
+
+        # 兼容飞书里常见的日期格式：2026/7/5、2026-07-05、2026/7/5 09:30
+        for sep in ("/", "-"):
+            if sep in text:
+                parts = text.replace("T", " ").split(" ", 1)
+                date_part = parts[0]
+                time_part = parts[1].strip() if len(parts) > 1 else ""
+                date_bits = date_part.split(sep)
+
+                if len(date_bits) == 3 and all(bit.isdigit() for bit in date_bits):
+                    year, month, day = map(int, date_bits)
+                    hour = minute = second = 0
+
+                    if time_part:
+                        time_bits = time_part.split(":")
+                        if len(time_bits) >= 2 and all(bit.strip().isdigit() for bit in time_bits[:2]):
+                            hour = int(time_bits[0])
+                            minute = int(time_bits[1])
+                            if len(time_bits) >= 3 and time_bits[2].strip().isdigit():
+                                second = int(time_bits[2])
+
+                    try:
+                        return dt.datetime(year, month, day, hour, minute, second, tzinfo=TZ)
+                    except Exception:
+                        pass
+
+        return parse_iso(text)
+
+    return parse_iso(str(value))
+
+
+def format_feishu_datetime(value) -> str:
+    parsed = parse_feishu_datetime(value)
+    if not parsed:
+        return ""
+    return parsed.astimezone(TZ).strftime("%Y-%m-%d %H:%M")
+
+
+def parse_approved_date(event: FeishuEvent) -> dt.date | None:
+    approved = parse_feishu_datetime(event.fields.get("approved_at"))
+    if approved:
+        return approved.astimezone(TZ).date()
+    return None
+
+
+def _first_text(*values) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def sync_missing_approved_at(token: str, events: list[FeishuEvent]) -> int:
+    now_ms = int(dt.datetime.now(tz=TZ).timestamp() * 1000)
+    updates = []
+
+    for event in events:
+        if event.fields.get("approved_at"):
+            continue
+        updates.append(
+            {
+                "record_id": event.record_id,
+                "fields": {"approved_at": now_ms},
+            }
+        )
+        event.fields["approved_at"] = now_ms
+
+    if not updates:
+        return 0
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    for i in range(0, len(updates), BATCH):
+        chunk = updates[i : i + BATCH]
+        r = requests.post(
+            f"{BASE}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/batch_update",
+            headers=headers,
+            json={"records": chunk},
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != 0:
+            raise RuntimeError(f"自动补写 approved_at 失败: {data}")
+
+    print(f"    [bot] 自动补写 approved_at {len(updates)} 条")
+    return len(updates)
+
+
 def event_sort_key(event: FeishuEvent):
     start = parse_iso(event.fields.get("start_time", ""))
     city = event.fields.get("city") or ("线上" if event.fields.get("is_online") else "其他")
@@ -173,12 +291,46 @@ def group_by_city(events: list[FeishuEvent]) -> list[tuple[str, list[FeishuEvent
     )
 
 
-def build_event_lines(event: FeishuEvent) -> list[str]:
+def build_daily_lines(event: FeishuEvent) -> list[str]:
     fields = event.fields
-    name = fields.get("name_zh") or fields.get("name_en") or "（无标题）"
-    venue = fields.get("venue") or ("线上" if fields.get("is_online") else "待定")
-    url = fields.get("register_url") or fields.get("source_url") or ""
-    tags = fields.get("topic_tags") or ""
+    name = _first_text(fields.get("name_zh"), fields.get("name_en"), "（无标题）")
+    organizer = _first_text(fields.get("organizer"))
+    co_organizer = _first_text(
+        fields.get("co_organizer"),
+        fields.get("co_organizers"),
+        fields.get("co_host"),
+        fields.get("co_hosts"),
+    )
+    city = _first_text(fields.get("city"), "线上" if fields.get("is_online") else "")
+    venue = _first_text(fields.get("venue"))
+    url = _first_text(fields.get("register_url"), fields.get("source_url"))
+    tags = _first_text(fields.get("topic_tags"))
+    approved_at = format_feishu_datetime(fields.get("approved_at"))
+
+    lines = [f"**{name}**"]
+    if organizer:
+        lines.append(f"主办方：{organizer}")
+    if co_organizer:
+        lines.append(f"联办方：{co_organizer}")
+    if city:
+        lines.append(f"城市：{city}")
+    if venue:
+        lines.append(f"地点：{venue}")
+    if url:
+        lines.append(f"报名：{url}")
+    if tags:
+        lines.append(f"关键词：{tags}")
+    if approved_at:
+        lines.append(f"审核时间：{approved_at}")
+    return lines
+
+
+def build_weekly_lines(event: FeishuEvent) -> list[str]:
+    fields = event.fields
+    name = _first_text(fields.get("name_zh"), fields.get("name_en"), "（无标题）")
+    venue = _first_text(fields.get("venue"), "线上" if fields.get("is_online") else "待定")
+    url = _first_text(fields.get("register_url"), fields.get("source_url"))
+    tags = _first_text(fields.get("topic_tags"))
 
     lines = [f"**{name}**"]
     lines.append(f"地点：{venue}")
@@ -194,8 +346,8 @@ def build_weekly_report(events: list[FeishuEvent], today: dt.date) -> list[dict]
     report_events = []
 
     for event in events:
-        updated_day = parse_updated_date(event)
-        if updated_day and monday <= updated_day <= today:
+        approved_day = parse_approved_date(event)
+        if approved_day and monday <= approved_day <= today:
             report_events.append(event)
 
     if not report_events:
@@ -224,7 +376,7 @@ def build_weekly_report(events: list[FeishuEvent], today: dt.date) -> list[dict]
             elements.append(
                 {
                     "tag": "div",
-                    "text": {"tag": "lark_md", "content": "\n".join(build_event_lines(event))},
+                    "text": {"tag": "lark_md", "content": "\n".join(build_weekly_lines(event))},
                 }
             )
             elements.append({"tag": "hr"})
@@ -251,7 +403,7 @@ def build_card(events: list[FeishuEvent], today: dt.date, is_sunday: bool) -> di
             elements.append(
                 {
                     "tag": "div",
-                    "text": {"tag": "lark_md", "content": "\n".join(build_event_lines(event))},
+                    "text": {"tag": "lark_md", "content": "\n".join(build_daily_lines(event))},
                 }
             )
             elements.append({"tag": "hr"})
@@ -305,6 +457,9 @@ def main():
     token = get_token()
     all_events = fetch_approved(token)
     print(f"    [bot] 读取到 approved 活动 {len(all_events)} 条")
+
+    # 如果 approved_at 为空，先自动补写，方便周报按 approved_at 回顾
+    sync_missing_approved_at(token, all_events)
 
     card = build_card(all_events, today, is_sunday)
     send(card)
