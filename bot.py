@@ -82,6 +82,7 @@ def fetch_approved(token: str) -> list[FeishuEvent]:
     headers = {"Authorization": f"Bearer {token}"}
     events = []
     page_token = ""
+    sample_rows = []
 
     while True:
         params = {"page_size": 500}
@@ -101,6 +102,14 @@ def fetch_approved(token: str) -> list[FeishuEvent]:
 
         for rec in data["data"].get("items", []):
             fields = rec.get("fields", {}) or {}
+            if len(sample_rows) < 5:
+                sample_rows.append(
+                    {
+                        "record_id": rec.get("record_id", ""),
+                        "status_raw": fields.get("status"),
+                        "field_names": sorted(fields.keys()),
+                    }
+                )
             if _status_text(fields.get("status")) != "approved":
                 continue
             events.append(
@@ -115,6 +124,9 @@ def fetch_approved(token: str) -> list[FeishuEvent]:
         if not data["data"].get("has_more"):
             break
         page_token = data["data"].get("page_token", "")
+
+    if not events:
+        print(f"    [bot] 调试: 首批记录样本 {sample_rows}")
 
     return events
 
