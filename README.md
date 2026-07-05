@@ -26,18 +26,20 @@ pip install -r requirements.txt
 python run.py
 
 # 本地跑(带翻译)
-ANTHROPIC_API_KEY=sk-... python run.py
+OPENAI_API_KEY=sk-... python run.py
 ```
 
 ## 环境变量 / GitHub Secrets
 
 | 变量 | 说明 |
 |---|---|
-| `ANTHROPIC_API_KEY` | 翻译用,没有则跳过翻译 |
+| `OPENAI_API_KEY` | OpenAI 翻译用,没有则跳过翻译 |
+| `OPENAI_MODEL` | 可选,默认 `gpt-5.4-mini` |
 | `FEISHU_APP_ID` | 飞书自建应用 App ID |
 | `FEISHU_APP_SECRET` | 飞书自建应用 App Secret |
 | `FEISHU_APP_TOKEN` | 多维表格 app_token(URL 里读) |
 | `FEISHU_TABLE_ID` | 多维表格 table_id(URL 里读) |
+| `FEISHU_BOT_WEBHOOK` | 飞书群机器人 Webhook |
 
 ## 数据流
 

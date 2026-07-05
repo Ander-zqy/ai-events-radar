@@ -11,21 +11,20 @@
   - 持久缓存:按 (引擎, 源, 目标, 原文) 缓存,每天 cron 重复跑不重复翻。
   - 单条活动把 name+desc 合并成一次请求(省调用),按字段写回缓存。
   - 引擎可插拔:
-        AnthropicTranslator —— 默认,LLM 翻译,带 AI 活动术语表,质量最好
+        OpenAITranslator    —— 默认,LLM 翻译,带 AI 活动术语表
         EchoTranslator      —— 离线桩,仅供测试编排逻辑
         (GoogleTranslator   —— 可选免费引擎,见文末注释)
   - 任意一条翻译失败 → 该字段留空,不中断整批,交给审核员补。
 
 用法:
     from normalize import normalize
-    from translate import translate, AnthropicTranslator
+    from translate import translate, OpenAITranslator
     events = [normalize(d) for d in raw_dicts]
-    events = translate(events, engine=AnthropicTranslator())   # 需 ANTHROPIC_API_KEY
+    events = translate(events, engine=OpenAITranslator())   # 需 OPENAI_API_KEY
 ============================================================
 """
 
 import os
-import re
 import json
 import time
 import hashlib
@@ -66,53 +65,79 @@ class Translator(Protocol):
 
 
 # ------------------------------------------------------------
-# 引擎 1:Anthropic LLM(默认,推荐)
+# 引擎 1:OpenAI LLM(默认,推荐)
 # ------------------------------------------------------------
-class AnthropicTranslator:
-    id = "anthropic"
+class OpenAITranslator:
+    id = "openai"
 
-    def __init__(self, model: str = "claude-haiku-4-5-20251001",
+    def __init__(self, model: str = None,
                  api_key: str = None, timeout: int = 60):
-        # Haiku 便宜快,适合批量翻译;要更高质量可换 claude-sonnet-4-6
-        self.model = model
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        # mini 兼顾翻译质量、速度与成本；可用 OPENAI_MODEL 覆盖。
+        self.model = model or os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.timeout = timeout
 
     def translate_batch(self, texts: List[str], src: str, tgt: str) -> List[str]:
         if not texts:
             return []
         if not self.api_key:
-            raise RuntimeError("缺少 ANTHROPIC_API_KEY")
+            raise RuntimeError("缺少 OPENAI_API_KEY")
 
         lang_name = {"zh": "Simplified Chinese", "en": "English"}
         gloss = "\n".join(f"  {k} → {v}" for k, v in GLOSSARY.items())
-        system = (
+        instructions = (
             f"You translate AI/tech event copy from {lang_name.get(src, src)} "
             f"to {lang_name.get(tgt, tgt)}. Keep it natural and concise; preserve "
             f"product/brand names and acronyms as-is. Use this glossary:\n{gloss}\n"
-            "Return ONLY a JSON array of translated strings, same length and order "
-            "as the input array. No markdown, no commentary."
+            "Return translated strings in exactly the same length and order as "
+            "the input array. Do not add commentary."
         )
         payload = {
             "model": self.model,
-            "max_tokens": 1024,
-            "system": system,
-            "messages": [{"role": "user", "content": json.dumps(texts, ensure_ascii=False)}],
+            "instructions": instructions,
+            "input": json.dumps(texts, ensure_ascii=False),
+            "max_output_tokens": 4096,
+            "store": False,
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "event_translations",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "translations": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            }
+                        },
+                        "required": ["translations"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
         }
         r = requests.post(
-            "https://api.anthropic.com/v1/messages",
+            "https://api.openai.com/v1/responses",
             headers={
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
+                "authorization": f"Bearer {self.api_key.strip()}",
                 "content-type": "application/json",
             },
             json=payload, timeout=self.timeout,
         )
         r.raise_for_status()
-        text = "".join(b.get("text", "") for b in r.json().get("content", [])
-                       if b.get("type") == "text").strip()
-        text = re.sub(r"^```(?:json)?|```$", "", text).strip()
-        out = json.loads(text)
+        data = r.json()
+        text = "".join(
+            part.get("text", "")
+            for item in data.get("output", [])
+            if item.get("type") == "message"
+            for part in item.get("content", [])
+            if part.get("type") == "output_text"
+        ).strip()
+        if not text:
+            raise ValueError(f"OpenAI 未返回文本: status={data.get('status')!r}")
+        parsed = json.loads(text)
+        out = parsed.get("translations")
         if not isinstance(out, list) or len(out) != len(texts):
             raise ValueError(f"译文条数不匹配:期望 {len(texts)} 得到 {out!r}")
         return [str(x) for x in out]
@@ -123,7 +148,7 @@ class AnthropicTranslator:
 # ------------------------------------------------------------
 class EchoTranslator:
     id = "echo"
-    # 给 demo 用的极小词典,让输出看起来像样;真翻译请用 AnthropicTranslator
+    # 给 demo 用的极小词典,让输出看起来像样;真翻译请用 OpenAITranslator
     _MINI = {
         "北京AI创业者大会": "Beijing AI Founders Conference",
         "Agent 黑客松": "Agent Hackathon",
@@ -213,7 +238,7 @@ def translate_event(ev: NormalizedEvent, engine: Translator, cache: TranslationC
 def translate(events: List[NormalizedEvent], engine: Translator = None,
               cache_path: str = ".translation_cache.json",
               sleep: float = 0.0) -> List[NormalizedEvent]:
-    engine = engine or AnthropicTranslator()
+    engine = engine or OpenAITranslator()
     cache = TranslationCache(cache_path)
     for ev in events:
         translate_event(ev, engine, cache)

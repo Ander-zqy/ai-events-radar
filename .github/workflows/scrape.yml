@@ -2,10 +2,7 @@ name: scrape-events
 
 on:
   schedule:
-    # 每天 01:00 UTC = 09:00 北京(抓取 + 写飞书审核台)
     - cron: "0 1 * * *"
-    # 每天 02:00 UTC = 10:00 北京(推送机器人日报)
-    - cron: "0 2 * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -13,10 +10,9 @@ permissions:
 
 jobs:
   scrape:
-    name: 抓取并写入审核台
+    name: scrape-and-write-review-table
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # 只在 01:00 UTC 或手动触发时跑
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 1 * * *'
     steps:
       - uses: actions/checkout@v4
@@ -26,10 +22,10 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: 安装依赖
+      - name: install-dependencies
         run: pip install -r requirements.txt
 
-      - name: 恢复状态缓存
+      - name: restore-state-cache
         uses: actions/cache@v4
         with:
           path: |
@@ -40,46 +36,21 @@ jobs:
           restore-keys: |
             scraper-state-
 
-      - name: 跑管道
+      - name: run-pipeline
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          FEISHU_APP_ID:     ${{ secrets.FEISHU_APP_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: gpt-5.4-mini
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
-          FEISHU_APP_TOKEN:  ${{ secrets.FEISHU_APP_TOKEN }}
-          FEISHU_TABLE_ID:   ${{ secrets.FEISHU_TABLE_ID }}
+          FEISHU_APP_TOKEN: ${{ secrets.FEISHU_APP_TOKEN }}
+          FEISHU_TABLE_ID: ${{ secrets.FEISHU_TABLE_ID }}
           OUTPUT_DIR: out
         run: python run.py
 
-      - name: 上传产出
+      - name: upload-artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: events-${{ github.run_id }}
           path: out/
           retention-days: 14
-
-  bot:
-    name: 机器人日报推送
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # 只在 02:00 UTC 或手动触发时跑
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * *'
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: 安装依赖
-        run: pip install -r requirements.txt
-
-      - name: 推送机器人日报
-        env:
-          FEISHU_APP_ID:      ${{ secrets.FEISHU_APP_ID }}
-          FEISHU_APP_SECRET:  ${{ secrets.FEISHU_APP_SECRET }}
-          FEISHU_APP_TOKEN:   ${{ secrets.FEISHU_APP_TOKEN }}
-          FEISHU_TABLE_ID:    ${{ secrets.FEISHU_TABLE_ID }}
-          FEISHU_BOT_WEBHOOK: ${{ secrets.FEISHU_BOT_WEBHOOK }}
-        run: python bot.py
