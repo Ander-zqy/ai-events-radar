@@ -36,8 +36,7 @@ APP_ID       = os.environ.get("FEISHU_APP_ID", "")
 APP_SECRET   = os.environ.get("FEISHU_APP_SECRET", "")
 APP_TOKEN    = os.environ.get("FEISHU_APP_TOKEN", "")
 TABLE_ID     = os.environ.get("FEISHU_TABLE_ID", "")
-BOT_WEBHOOK  = os.environ.get("FEISHU_BOT_WEBHOOK",
-               "https://open.feishu.cn/open-apis/bot/v2/hook/1547dd46-c25c-40bf-a2ef-bc250ebba4b9")
+BOT_WEBHOOK  = os.environ.get("FEISHU_BOT_WEBHOOK", "")
 
 BASE    = "https://open.feishu.cn/open-apis"
 TZ      = ZoneInfo("Asia/Shanghai")
@@ -187,6 +186,8 @@ def build_card(events: list, today: datetime.date, is_sunday: bool) -> dict:
 # 推送
 # ------------------------------------------------------------
 def send(card: dict):
+    if not BOT_WEBHOOK:
+        raise RuntimeError("缺少 FEISHU_BOT_WEBHOOK")
     payload = {"msg_type": "interactive", "card": card}
     r = requests.post(BOT_WEBHOOK, json=payload, timeout=10)
     r.raise_for_status()

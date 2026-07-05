@@ -39,6 +39,7 @@ OPENAI_API_KEY=sk-... python run.py
 | `FEISHU_APP_SECRET` | 飞书自建应用 App Secret |
 | `FEISHU_APP_TOKEN` | 多维表格 app_token(URL 里读) |
 | `FEISHU_TABLE_ID` | 多维表格 table_id(URL 里读) |
+| `FEISHU_BOT_WEBHOOK` | 飞书群机器人 Webhook |
 
 ## 数据流
 
