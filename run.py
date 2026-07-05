@@ -8,12 +8,13 @@
 
   - 抓取阶段经 stability.run_source:计时、捕异常、查哨兵、记报告。
   - 按 id 去重(id = hash(source_url))。
-  - 翻译仅在设了 ANTHROPIC_API_KEY 时执行(没 key 也能跑,只是不翻)。
+  - 翻译仅在设了 OPENAI_API_KEY 时执行(没 key 也能跑,只是不翻)。
   - 暂时输出契约结构的 CSV + JSON;飞书 sink 建好后把 write_outputs 换成 upsert 即可。
   - 退出码:有源归零或异常 → 1(让 CI 变红、触发告警)。
 
 环境变量:
-    ANTHROPIC_API_KEY   翻译用(没有则跳过翻译)
+    OPENAI_API_KEY      翻译用(没有则跳过翻译)
+    OPENAI_MODEL        可选,默认 gpt-5.4-mini
     OUTPUT_DIR          输出目录(默认当前目录)
 ============================================================
 """
@@ -32,7 +33,7 @@ import event_scraper as es
 from stability import RunReport, SourceHealth, run_source
 from normalize import normalize
 from enrich import enrich
-from translate import translate, AnthropicTranslator
+from translate import translate, OpenAITranslator
 
 # 契约字段顺序(CSV 表头)
 FIELDS = ["id", "status", "name_zh", "name_en", "start_time", "end_time",
@@ -64,10 +65,10 @@ def run_pipeline(translate_on: bool = True):
     enrich(events)
 
     # 4) translate(补双语)
-    if translate_on and os.environ.get("ANTHROPIC_API_KEY"):
-        translate(events, engine=AnthropicTranslator(), sleep=0.2)
+    if translate_on and os.environ.get("OPENAI_API_KEY"):
+        translate(events, engine=OpenAITranslator(), sleep=0.2)
     else:
-        print("    [translate] 跳过(未设 ANTHROPIC_API_KEY)")
+        print("    [translate] 跳过(未设 OPENAI_API_KEY)")
 
     health.save()
     return events, report
