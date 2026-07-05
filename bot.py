@@ -62,13 +62,29 @@ def get_token() -> str:
     return data["tenant_access_token"]
 
 
+def _status_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip().lower()
+    if isinstance(value, dict):
+        for key in ("text", "name", "value"):
+            if key in value and value[key] is not None:
+                return str(value[key]).strip().lower()
+        return ""
+    if isinstance(value, list):
+        parts = [_status_text(item) for item in value]
+        return ",".join(p for p in parts if p)
+    return str(value).strip().lower()
+
+
 def fetch_approved(token: str) -> list[FeishuEvent]:
     headers = {"Authorization": f"Bearer {token}"}
     events = []
     page_token = ""
 
     while True:
-        params = {"page_size": 500, "filter": 'CurrentValue.[status]="approved"'}
+        params = {"page_size": 500}
         if page_token:
             params["page_token"] = page_token
 
@@ -84,9 +100,12 @@ def fetch_approved(token: str) -> list[FeishuEvent]:
             raise RuntimeError(f"读取表失败: {data}")
 
         for rec in data["data"].get("items", []):
+            fields = rec.get("fields", {}) or {}
+            if _status_text(fields.get("status")) != "approved":
+                continue
             events.append(
                 FeishuEvent(
-                    fields=rec.get("fields", {}),
+                    fields=fields,
                     record_id=rec.get("record_id", ""),
                     created_time=rec.get("created_time", ""),
                     updated_time=rec.get("updated_time", ""),
