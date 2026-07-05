@@ -96,10 +96,10 @@ def ms_to_date(ms) -> datetime.date:
 def filter_events(events: list, today: datetime.date, is_sunday: bool) -> list:
     result = []
     if is_sunday:
-        # 本周一 ~ 本周日
-        monday = today - datetime.timedelta(days=today.weekday())
-        sunday = monday + datetime.timedelta(days=6)
-        window = (monday, sunday)
+        # 周日报“本周已发布且仍未发生的活动”。
+        # 由于表里目前没有稳定的“发布时间”字段，这里先按“今天及以后”的未来活动筛。
+        # 如果后面你想严格按“本周新发布”统计，我们再加一个 published_at 字段。
+        window = (today, datetime.date.max)
     else:
         # 今天 ~ 今天+3天
         window = (today, today + datetime.timedelta(days=3))
