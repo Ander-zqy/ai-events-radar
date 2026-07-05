@@ -150,6 +150,86 @@ def parse_updated_date(event: FeishuEvent) -> dt.date | None:
     return updated.astimezone(TZ).date() if updated else None
 
 
+def parse_feishu_datetime(value) -> dt.datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return dt.datetime.fromtimestamp(float(value) / 1000, tz=TZ)
+        except Exception:
+            return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.isdigit():
+            try:
+                return dt.datetime.fromtimestamp(int(text) / 1000, tz=TZ)
+            except Exception:
+                return None
+        return parse_iso(text)
+    return parse_iso(str(value))
+
+
+def format_feishu_datetime(value) -> str:
+    parsed = parse_feishu_datetime(value)
+    if not parsed:
+        return ""
+    return parsed.astimezone(TZ).strftime("%Y-%m-%d %H:%M")
+
+
+def parse_approved_date(event: FeishuEvent) -> dt.date | None:
+    approved = parse_feishu_datetime(event.fields.get("approved_at"))
+    if approved:
+        return approved.astimezone(TZ).date()
+    return None
+
+
+def _first_text(*values) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def sync_missing_approved_at(token: str, events: list[FeishuEvent]) -> int:
+    now_ms = int(dt.datetime.now(tz=TZ).timestamp() * 1000)
+    updates = []
+    for event in events:
+        if event.fields.get("approved_at"):
+            continue
+        updates.append(
+            {
+                "record_id": event.record_id,
+                "fields": {"approved_at": now_ms},
+            }
+        )
+        event.fields["approved_at"] = now_ms
+
+    if not updates:
+        return 0
+
+    headers = _tm.headers()
+    headers["Authorization"] = f"Bearer {token}"
+    for i in range(0, len(updates), BATCH):
+        chunk = updates[i : i + BATCH]
+        r = requests.post(
+            f"{BASE}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/batch_update",
+            headers=headers,
+            json={"records": chunk},
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != 0:
+            raise RuntimeError(f"自动补写 approved_at 失败: {data}")
+    print(f"    [bot] 自动补写 approved_at {len(updates)} 条")
+    return len(updates)
+
+
 def event_sort_key(event: FeishuEvent):
     start = parse_iso(event.fields.get("start_time", ""))
     city = event.fields.get("city") or ("线上" if event.fields.get("is_online") else "其他")
@@ -173,12 +253,46 @@ def group_by_city(events: list[FeishuEvent]) -> list[tuple[str, list[FeishuEvent
     )
 
 
-def build_event_lines(event: FeishuEvent) -> list[str]:
+def build_daily_lines(event: FeishuEvent) -> list[str]:
     fields = event.fields
-    name = fields.get("name_zh") or fields.get("name_en") or "（无标题）"
-    venue = fields.get("venue") or ("线上" if fields.get("is_online") else "待定")
-    url = fields.get("register_url") or fields.get("source_url") or ""
-    tags = fields.get("topic_tags") or ""
+    name = _first_text(fields.get("name_zh"), fields.get("name_en"), "（无标题）")
+    organizer = _first_text(fields.get("organizer"))
+    co_organizer = _first_text(
+        fields.get("co_organizer"),
+        fields.get("co_organizers"),
+        fields.get("co_host"),
+        fields.get("co_hosts"),
+    )
+    city = _first_text(fields.get("city"), "线上" if fields.get("is_online") else "")
+    venue = _first_text(fields.get("venue"))
+    url = _first_text(fields.get("register_url"), fields.get("source_url"))
+    tags = _first_text(fields.get("topic_tags"))
+    approved_at = format_feishu_datetime(fields.get("approved_at"))
+
+    lines = [f"**{name}**"]
+    if organizer:
+        lines.append(f"主办方：{organizer}")
+    if co_organizer:
+        lines.append(f"联办方：{co_organizer}")
+    if city:
+        lines.append(f"城市：{city}")
+    if venue:
+        lines.append(f"地点：{venue}")
+    if url:
+        lines.append(f"报名：{url}")
+    if tags:
+        lines.append(f"关键词：{tags}")
+    if approved_at:
+        lines.append(f"审核时间：{approved_at}")
+    return lines
+
+
+def build_weekly_lines(event: FeishuEvent) -> list[str]:
+    fields = event.fields
+    name = _first_text(fields.get("name_zh"), fields.get("name_en"), "（无标题）")
+    venue = _first_text(fields.get("venue"), "线上" if fields.get("is_online") else "待定")
+    url = _first_text(fields.get("register_url"), fields.get("source_url"))
+    tags = _first_text(fields.get("topic_tags"))
 
     lines = [f"**{name}**"]
     lines.append(f"地点：{venue}")
@@ -194,8 +308,8 @@ def build_weekly_report(events: list[FeishuEvent], today: dt.date) -> list[dict]
     report_events = []
 
     for event in events:
-        updated_day = parse_updated_date(event)
-        if updated_day and monday <= updated_day <= today:
+        approved_day = parse_approved_date(event)
+        if approved_day and monday <= approved_day <= today:
             report_events.append(event)
 
     if not report_events:
@@ -224,7 +338,7 @@ def build_weekly_report(events: list[FeishuEvent], today: dt.date) -> list[dict]
             elements.append(
                 {
                     "tag": "div",
-                    "text": {"tag": "lark_md", "content": "\n".join(build_event_lines(event))},
+                    "text": {"tag": "lark_md", "content": "\n".join(build_weekly_lines(event))},
                 }
             )
             elements.append({"tag": "hr"})
@@ -251,7 +365,7 @@ def build_card(events: list[FeishuEvent], today: dt.date, is_sunday: bool) -> di
             elements.append(
                 {
                     "tag": "div",
-                    "text": {"tag": "lark_md", "content": "\n".join(build_event_lines(event))},
+                    "text": {"tag": "lark_md", "content": "\n".join(build_daily_lines(event))},
                 }
             )
             elements.append({"tag": "hr"})
@@ -305,6 +419,7 @@ def main():
     token = get_token()
     all_events = fetch_approved(token)
     print(f"    [bot] 读取到 approved 活动 {len(all_events)} 条")
+    sync_missing_approved_at(token, all_events)
 
     card = build_card(all_events, today, is_sunday)
     send(card)
